@@ -6,6 +6,7 @@ releases:
     values:
       - values.yaml
       - ecrImageFull: '{{ requiredEnv "IMAGE_FULL_TAG" }}'
+      - appNameSpace: '{{ requiredEnv "APP_NAMESPACE" }}'
 {{ if env "APP_HOST" }}
       - host: '{{ env "APP_HOST" }}'
 {{ end }}
