@@ -8,3 +8,5 @@ tfplan
 session-manager-plugin.deb
 .terraform.lock.hcl
 image_tag.txt
+kubeconfig.yaml
+ansible/inventory.ini
