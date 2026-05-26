@@ -1,0 +1,123 @@
+---
+- name: Deploy application
+  hosts: k3s_nodes
+  become: true
+  vars:
+    k3s_version: "v1.27.3+k3s1"
+    helm_version: "v3.12.3"
+    kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+    helm_url: https://get.helm.sh/helm-v3.12.3-linux-amd64.tar.gz
+    helm_dest: /usr/local/bin/helm
+    app_name: myadmink3s    # <-- CHANGE TO YOUR APP NAME LIKE IN main.tf local.app_name
+    app_namespace: myadmin  # <-- CHANGE TO YOUR APP NAMESPACE
+    aws_account_id: "735356255780" # <-- CHANGE TO YOUR AWS ACCOUNT ID
+    chart_path: /home/ubuntu/{{app_name}}
+
+  tasks:
+
+    - name: Read Docker image tag (local)
+      ansible.builtin.set_fact:
+        image_tag: "{{ lookup('file', '../../terraform/image_tag.txt') }}"
+      delegate_to: localhost
+
+    - name: Install unzip
+      ansible.builtin.apt:
+        name: unzip
+        state: present
+        update_cache: true
+
+    - name: Download AWS CLI v2
+      ansible.builtin.get_url:
+        url: "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+        dest: /tmp/awscliv2.zip
+        mode: '0644'
+
+    - name: Unzip AWS CLI
+      ansible.builtin.unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp
+        remote_src: true
+
+    - name: Install AWS CLI
+      ansible.builtin.command: /tmp/aws/install --update
+      args:
+        creates: /usr/local/bin/aws
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - sudo
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+        state: present
+
+    - name: Download k3s installation script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/install_k3s.sh
+        mode: '0700'
+
+    - name: Install k3s
+      ansible.builtin.command: /tmp/install_k3s.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        INSTALL_K3S_EXEC: "--tls-san {{ inventory_hostname }}"
+      args:
+        creates: /usr/local/bin/k3s
+
+    - name: Get ECR token
+      ansible.builtin.command: aws ecr get-login-password --region us-west-2
+      register: ecr_token
+      changed_when: false
+
+    - name: Configure K3s registry for ECR
+      ansible.builtin.copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          configs:
+            "735356255780.dkr.ecr.us-west-2.amazonaws.com":
+              auth:
+                username: AWS
+                password: "{{ ecr_token.stdout }}"
+        mode: '0600'
+
+    - name: Restart k3s to apply registry changes
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+        enabled: true
+
+    - name: Wait for k3s node to be ready
+      ansible.builtin.wait_for:
+        path: /usr/local/bin/k3s
+        state: present
+        timeout: 300
+
+    - name: Ensure ~/.kube directory exists
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0700'
+
+    - name: Copy k3s kubeconfig
+      ansible.builtin.copy:
+        remote_src: true
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /root/.kube/config
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Replace localhost with public IP in kubeconfig
+      ansible.builtin.replace:
+        path: /root/.kube/config
+        regexp: "server: https://127.0.0.1:6443"
+        replace: "server: https://{{ inventory_hostname }}:6443"
+
+

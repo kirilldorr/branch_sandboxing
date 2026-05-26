@@ -1,0 +1,6 @@
+appName: myadmink3s # SET YOUR APP NAME LIKE IN Chart.yaml
+appNameSpace: myadmin # SET YOUR APP NAMESPACE
+containerPort: 3500
+servicePort: 80
+adminSecret: "your_secret"
+ecrImageFull: ""

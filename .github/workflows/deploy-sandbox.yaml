@@ -1,0 +1,183 @@
+name: Auto Sandbox Management
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - master
+      - dev
+      - develop
+  delete:
+
+env:
+  CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+  DOMAIN: "devtracklify.com"    # Change to your domain name
+  BRANCH_RAM_REQ: "1024"        # Change to your pattern RAM requirement in Mb
+
+jobs:
+  deploy-sandbox:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Sanitize Branch Name
+        id: slug
+        run: |
+          RAW_BRANCH="${{ github.ref_name }}"
+          CLEAN_BRANCH=$(echo "$RAW_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+          echo "BRANCH_SLUG=$CLEAN_BRANCH" >> $GITHUB_ENV
+          echo "Final sandbox branch name: $CLEAN_BRANCH"
+
+      - name: Setup Terraform & Kubectl
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Setup Helmfile
+        run: |
+          wget -O helmfile_linux_amd64.tar.gz https://github.com/helmfile/helmfile/releases/download/v0.162.0/helmfile_0.162.0_linux_amd64.tar.gz
+          tar -zxvf helmfile_linux_amd64.tar.gz
+          sudo mv helmfile /usr/local/bin/helmfile
+          rm helmfile_linux_amd64.tar.gz
+          helm plugin install https://github.com/databus23/helm-diff
+
+      - name: Get Base Infrastructure Outputs
+        id: base_infra
+        run: |
+          cd ${GITHUB_WORKSPACE}/deploy/terraform/
+          terraform init
+          echo "BASE_IP=$(terraform output -raw server_ip)" >> $GITHUB_ENV
+          echo "INSTANCE_TYPE=$(terraform output -raw instance_type)" >> $GITHUB_ENV
+          echo "ACCOUNT_ID=$(terraform output -raw account_id)" >> $GITHUB_ENV
+          echo "REGION=$(terraform output -raw aws_region)" >> $GITHUB_ENV
+          echo "TAG=$(terraform output -raw hash)" >> $GITHUB_ENV
+
+      - name: Fetch Kubeconfig via SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          mkdir -p ~/.kube
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@${{ env.BASE_IP }} "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config
+          sed -i "s/127.0.0.1/${{ env.BASE_IP }}/g" ~/.kube/config
+          sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Check cluster RAM Capacity
+        run: |
+          NODE_ALLOC_RAM=$(kubectl get nodes -o json | jq '[.items[].status.allocatable.memory | rtrimstr("Ki") | tonumber | . / 1024] | add')
+          TOTAL_REQ_RAM=$(kubectl get pods --all-namespaces -o json | jq '[.items[].spec.containers[].resources.requests.memory | select(. != null) | if endswith("Ki") then rtrimstr("Ki") | tonumber | . / 1024 else if endswith("Mi") then rtrimstr("Mi") | tonumber else if endswith("Gi") then rtrimstr("Gi") | tonumber * 1024 else 0 end end end] | add')
+          
+          NODE_ALLOC_RAM=${NODE_ALLOC_RAM%.*}
+          TOTAL_REQ_RAM=${TOTAL_REQ_RAM:-0}
+          TOTAL_REQ_RAM=${TOTAL_REQ_RAM%.*}
+          FREE_RAM=$((NODE_ALLOC_RAM - TOTAL_REQ_RAM))
+          REQUIRED_RAM_WITH_MARGIN=$(( BRANCH_RAM_REQ * 120 / 100 ))
+          
+          if [ "$FREE_RAM" -lt "$REQUIRED_RAM_WITH_MARGIN" ]; then
+            echo "NEED_SCALE=true" >> $GITHUB_ENV
+          else
+            echo "NEED_SCALE=false" >> $GITHUB_ENV
+          fi
+
+      - name: Fetch K3s Node Token
+        if: env.NEED_SCALE == 'true'
+        run: |
+          K3S_TOKEN=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@${{ env.BASE_IP }} "sudo cat /var/lib/rancher/k3s/server/node-token")
+          echo "TF_VAR_k3s_token=$K3S_TOKEN" >> $GITHUB_ENV
+
+      - name: Scale Up Cluster (Terraform)
+        if: env.NEED_SCALE == 'true'
+        run: |
+          cd ${GITHUB_WORKSPACE}/deploy/terraform/dynamic_workers
+          terraform init -backend-config="key=sandboxes/branch-${{ env.BRANCH_SLUG }}.tfstate"
+          terraform apply -var="instance_type=${{ env.INSTANCE_TYPE }}" -var="branch_slug=${{ env.BRANCH_SLUG }}" -auto-approve
+          sleep 60 
+
+      - name: Manage Cloudflare DNS Record
+        run: |
+          SUBDOMAIN="${{ env.BRANCH_SLUG }}"
+          FULL_DOMAIN="$SUBDOMAIN.${{ env.DOMAIN }}"
+          
+          # Перевіряємо, чи існує вже такий запис (бо пайплайн запускається на кожен push в гілку)
+          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${{ env.CF_ZONE_ID }}/dns_records?name=$FULL_DOMAIN" \
+            -H "Authorization: Bearer ${{ env.CF_API_TOKEN }}" | jq -r '.result[0].id')
+            
+          if [ "$RECORD_ID" == "null" ] || [ -z "$RECORD_ID" ]; then
+            echo "Створення нового DNS запису..."
+            curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${{ env.CF_ZONE_ID }}/dns_records" \
+              -H "Authorization: Bearer ${{ env.CF_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"A\",\"name\":\"$SUBDOMAIN\",\"content\":\"${{ env.BASE_IP }}\",\"ttl\":120,\"proxied\":false}"
+          else
+            echo "DNS запис вже існує. Пропускаємо."
+          fi
+
+      - name: Deploy Application
+        run: |
+          export APP_NAMESPACE="sandbox-${{ env.BRANCH_SLUG }}"
+          export APP_HOST="${{ env.BRANCH_SLUG }}.${{ env.DOMAIN }}"
+          export IMAGE_FULL_TAG="${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.REGION }}.amazonaws.com/myadmink3s:${{ env.TAG }}"
+          
+          cd ${GITHUB_WORKSPACE}/deploy/helm
+          helmfile apply
+
+  cleanup-sandbox:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Sanitize Deleted Branch Name
+        id: slug
+        run: |
+          RAW_BRANCH="${{ github.event.ref }}"
+          CLEAN_BRANCH=$(echo "$RAW_BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/-\+/-/g' | sed 's/^-//' | sed 's/-$//')
+          echo "BRANCH_SLUG=$CLEAN_BRANCH" >> $GITHUB_ENV
+
+      - name: Setup Terraform & Kubectl
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Get Base Infrastructure Outputs
+        id: base_infra
+        run: |
+          cd ${GITHUB_WORKSPACE}/deploy/terraform/
+          terraform init
+          echo "BASE_IP=$(terraform output -raw server_ip)" >> $GITHUB_ENV
+
+      - name: Fetch Kubeconfig via SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          
+          mkdir -p ~/.kube
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@${{ env.BASE_IP }} "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config
+          sed -i "s/127.0.0.1/${{ env.BASE_IP }}/g" ~/.kube/config
+          sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Delete K3s Namespace
+        run: |
+          kubectl delete namespace sandbox-${{ env.BRANCH_SLUG }} --ignore-not-found=true
+
+      - name: Scale Down Cluster
+        run: |
+          cd ${GITHUB_WORKSPACE}/deploy/terraform/dynamic_workers
+          terraform init -backend-config="key=sandboxes/branch-${{ env.BRANCH_SLUG }}.tfstate"
+          terraform destroy -var="instance_type=dummy" -var="branch_slug=${{ env.BRANCH_SLUG }}" -var="k3s_token=dummy" -auto-approve
+
+      - name: Delete Cloudflare DNS Record
+        run: |
+          FULL_DOMAIN="${{ env.BRANCH_SLUG }}.${{ env.DOMAIN }}"
+          
+          RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${{ env.CF_ZONE_ID }}/dns_records?name=$FULL_DOMAIN" \
+            -H "Authorization: Bearer ${{ env.CF_API_TOKEN }}" | jq -r '.result[0].id')
+          
+          if [ "$RECORD_ID" != "null" ] && [ -n "$RECORD_ID" ]; then
+            curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${{ env.CF_ZONE_ID }}/dns_records/$RECORD_ID" \
+              -H "Authorization: Bearer ${{ env.CF_API_TOKEN }}"
+          fi

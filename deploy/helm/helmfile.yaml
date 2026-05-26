@@ -1,0 +1,11 @@
+releases:
+  - name: '{{ requiredEnv "APP_NAMESPACE" }}'
+    namespace: '{{ requiredEnv "APP_NAMESPACE" }}'
+    createNamespace: true
+    chart: .
+    values:
+      - values.yaml
+      - ecrImageFull: '{{ requiredEnv "IMAGE_FULL_TAG" }}'
+{{ if env "APP_HOST" }}
+      - host: '{{ env "APP_HOST" }}'
+{{ end }}
