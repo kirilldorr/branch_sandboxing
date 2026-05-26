@@ -23,6 +23,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
       - name: Sanitize Branch Name
         id: slug
         run: |
@@ -47,7 +54,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/deploy/terraform/
           terraform init
-          echo "BASE_IP=$(terraform output -raw server_ip)" >> $GITHUB_ENV
+          echo "BASE_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
           echo "INSTANCE_TYPE=$(terraform output -raw instance_type)" >> $GITHUB_ENV
           echo "ACCOUNT_ID=$(terraform output -raw account_id)" >> $GITHUB_ENV
           echo "REGION=$(terraform output -raw aws_region)" >> $GITHUB_ENV
@@ -131,6 +138,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
       - name: Sanitize Deleted Branch Name
         id: slug
         run: |
@@ -146,7 +160,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/deploy/terraform/
           terraform init
-          echo "BASE_IP=$(terraform output -raw server_ip)" >> $GITHUB_ENV
+          echo "BASE_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
 
       - name: Fetch Kubeconfig via SSH
         run: |

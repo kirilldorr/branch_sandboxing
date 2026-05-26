@@ -41,3 +41,7 @@ output "iam_instance_profile" {
 output "key_name" {
   value = aws_key_pair.app_deployer.key_name
 }
+
+output "instance_type" {
+  value = aws_instance.ec2_instance.instance_type
+}
