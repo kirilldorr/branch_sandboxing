@@ -206,7 +206,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/deploy/terraform/dynamic_workers
           terraform init -backend-config="key=sandboxes/branch-${{ env.BRANCH_SLUG }}.tfstate"
-          terraform destroy -var="instance_type=dummy" -var="branch_slug=${{ env.BRANCH_SLUG }}" -var="k3s_token=dummy" -auto-approve
+          terraform destroy -var="instance_type=t3.micro" -var="branch_slug=${{ env.BRANCH_SLUG }}" -var="k3s_token=dummy" -var="k3s_version=dummy" -auto-approve
 
       - name: Delete Cloudflare DNS Record
         run: |
