@@ -74,19 +74,42 @@ jobs:
 
       - name: Check cluster RAM Capacity
         run: |
-          NODE_ALLOC_RAM=$(kubectl get nodes -o json | jq '[.items[].status.allocatable.memory | rtrimstr("Ki") | tonumber | . / 1024] | add')
-          TOTAL_REQ_RAM=$(kubectl get pods --all-namespaces -o json | jq '[.items[].spec.containers[].resources.requests.memory | select(. != null) | if endswith("Ki") then rtrimstr("Ki") | tonumber | . / 1024 else if endswith("Mi") then rtrimstr("Mi") | tonumber else if endswith("Gi") then rtrimstr("Gi") | tonumber * 1024 else 0 end end end] | add')
+          echo "=== Збір метрик кластера ==="
           
-          NODE_ALLOC_RAM=${NODE_ALLOC_RAM%.*}
+          # 1. Загальна доступна пам'ять (Allocatable)
+          NODE_ALLOC_RAM=$(kubectl get nodes -o json | jq '[.items[].status.allocatable.memory | rtrimstr("Ki") | tonumber | . / 1024] | add | floor')
+          
+          TOTAL_REQ_RAM=$(kubectl get pods --all-namespaces -o json | jq '[.items[].spec.containers[].resources.requests.memory | select(. != null) | if endswith("Ki") then rtrimstr("Ki") | tonumber | . / 1024 else if endswith("Mi") then rtrimstr("Mi") | tonumber else if endswith("Gi") then rtrimstr("Gi") | tonumber * 1024 else 0 end end end] | add | floor')
           TOTAL_REQ_RAM=${TOTAL_REQ_RAM:-0}
-          TOTAL_REQ_RAM=${TOTAL_REQ_RAM%.*}
-          FREE_RAM=$((NODE_ALLOC_RAM - TOTAL_REQ_RAM))
-          REQUIRED_RAM_WITH_MARGIN=$(( BRANCH_RAM_REQ * 120 / 100 ))
           
-          if [ "$FREE_RAM" -lt "$REQUIRED_RAM_WITH_MARGIN" ]; then
+          ACTUAL_USED_RAM=$(kubectl top nodes --no-headers 2>/dev/null | awk '{print $4}' | sed 's/Mi//g; s/Gi/*1024/g' | bc | awk '{sum+=$1} END {print sum}')
+          ACTUAL_USED_RAM=${ACTUAL_USED_RAM:-0}
+          
+          FREE_RAM_BY_REQ=$((NODE_ALLOC_RAM - TOTAL_REQ_RAM))
+          FREE_RAM_BY_ACTUAL=$((NODE_ALLOC_RAM - ACTUAL_USED_RAM))
+          
+          echo "Всього Allocatable ОЗУ: ${NODE_ALLOC_RAM} Mi"
+          echo "Зарезервовано подами (Requests): ${TOTAL_REQ_RAM} Mi -> Вільний залишок: ${FREE_RAM_BY_REQ} Mi"
+          echo "Фактично споживається (Top Nodes): ${ACTUAL_USED_RAM} Mi -> Вільний залишок: ${FREE_RAM_BY_ACTUAL} Mi"
+          
+          if [ "$FREE_RAM_BY_REQ" -lt "$FREE_RAM_BY_ACTUAL" ]; then
+            REAL_FREE_RAM=$FREE_RAM_BY_REQ
+            echo "-> Використовуємо ліміт за Requests (він суворіший)"
+          else
+            REAL_FREE_RAM=$FREE_RAM_BY_ACTUAL
+            echo "-> Використовуємо ліміт за Фактичним споживанням (розробники не вказали Requests або вони занижені)"
+          fi
+          
+          REQUIRED_RAM_WITH_MARGIN=$(( BRANCH_RAM_REQ * 120 / 100 ))
+          echo "Реально вільної ОЗУ для розгортання: ${REAL_FREE_RAM} Mi"
+          echo "Необхідно для нової пісочниці (+20% маржі): ${REQUIRED_RAM_WITH_MARGIN} Mi"
+          
+          if [ "$REAL_FREE_RAM" -lt "$REQUIRED_RAM_WITH_MARGIN" ]; then
             echo "NEED_SCALE=true" >> $GITHUB_ENV
+            echo "ВИСНОВОК: Місця недостатньо. Ініціюємо Terraform для створення нової ноди."
           else
             echo "NEED_SCALE=false" >> $GITHUB_ENV
+            echo "ВИСНОВОК: Місця достатньо. Розгортаємо на поточних ресурсах."
           fi
 
       - name: Fetch K3s Node Token
