@@ -5,7 +5,11 @@ terraform {
       version = "~> 5.0"
     }
   }
-  backend "s3" {}
+  backend "s3" {
+    bucket       = "terraform-sandbox-blogpost"
+    use_lockfile = true
+    region       = "us-west-2"
+  }
 }
 
 data "terraform_remote_state" "base" {
