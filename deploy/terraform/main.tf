@@ -44,8 +44,7 @@ locals {
 }
 
 provider "aws" {
-  region  = local.aws_region
-  profile = "myaws"
+  region = local.aws_region
 }
 
 data "aws_ami" "ubuntu_22_04" {

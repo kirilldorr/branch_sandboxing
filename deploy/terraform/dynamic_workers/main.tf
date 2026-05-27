@@ -22,8 +22,7 @@ data "terraform_remote_state" "base" {
 }
 
 provider "aws" {
-  region  = data.terraform_remote_state.base.outputs.aws_region
-  profile = "myaws"
+  region = data.terraform_remote_state.base.outputs.aws_region
 }
 
 data "aws_ami" "ubuntu_22_04" {
