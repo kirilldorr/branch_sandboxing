@@ -52,7 +52,7 @@ resource "aws_instance" "worker" {
   user_data = <<-EOF
     #!/bin/bash
     set -e
-    curl -sfL https://get.k3s.io | K3S_URL="https://${data.terraform_remote_state.base.outputs.public_ip}:6443" K3S_TOKEN="${var.k3s_token}" sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${var.k3s_version} | K3S_URL="https://${data.terraform_remote_state.base.outputs.public_ip}:6443" K3S_TOKEN="${var.k3s_token}" sh -
     EOF
 
   lifecycle {

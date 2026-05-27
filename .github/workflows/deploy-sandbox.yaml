@@ -14,6 +14,7 @@ env:
   CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
   DOMAIN: "devtracklify.com"    # Change to your domain name
   BRANCH_RAM_REQ: "1024"        # Change to your pattern RAM requirement in Mb
+  K3S_VERSION: "v1.27.3+k3s1"
 
 jobs:
   deploy-sandbox:
@@ -123,7 +124,7 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/deploy/terraform/dynamic_workers
           terraform init -backend-config="key=sandboxes/branch-${{ env.BRANCH_SLUG }}.tfstate"
-          terraform apply -var="instance_type=${{ env.INSTANCE_TYPE }}" -var="branch_slug=${{ env.BRANCH_SLUG }}" -auto-approve
+          terraform apply -var="instance_type=${{ env.INSTANCE_TYPE }}" -var="branch_slug=${{ env.BRANCH_SLUG }}" -var="k3s_version=${{ env.K3S_VERSION }}" -auto-approve
           sleep 60 
 
       - name: Manage Cloudflare DNS Record

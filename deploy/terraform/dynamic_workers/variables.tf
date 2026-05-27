@@ -13,3 +13,8 @@ variable "k3s_token" {
   type        = string
   sensitive   = true
 }
+
+variable "k3s_version" {
+  description = "K3s cluster version to install"
+  type        = string
+}
