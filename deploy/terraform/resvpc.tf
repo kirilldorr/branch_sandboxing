@@ -96,6 +96,11 @@ resource "aws_iam_role_policy_attachment" "ssm_core_policy" {
   role       = aws_iam_role.node_role.name
 }
 
+resource "aws_iam_role_policy_attachment" "ecr_access_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+  role       = aws_iam_role.node_role.name
+}
+
 resource "aws_iam_instance_profile" "instance_profile" {
   name = "${local.app_name}-instance-profile"
   role = aws_iam_role.node_role.name

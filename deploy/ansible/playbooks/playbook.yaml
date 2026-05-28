@@ -12,6 +12,7 @@
     app_namespace: myadmin  # <-- CHANGE TO YOUR APP NAMESPACE
     aws_account_id: "735356255780" # <-- CHANGE TO YOUR AWS ACCOUNT ID
     chart_path: /home/ubuntu/{{app_name}}
+    aws_region: us-west-2
 
   tasks:
 
@@ -71,20 +72,21 @@
       args:
         creates: /usr/local/bin/k3s
 
-    - name: Get ECR token
-      ansible.builtin.command: aws ecr get-login-password --region us-west-2
-      register: ecr_token
-      changed_when: false
+    - name: Install Amazon ECR Credential Helper
+      ansible.builtin.apt:
+        name: amazon-ecr-credential-helper
+        state: present
+        update_cache: yes
 
-    - name: Configure K3s registry for ECR
+    - name: Configure K3s registry to use ECR Helper
       ansible.builtin.copy:
         dest: /etc/rancher/k3s/registries.yaml
         content: |
           configs:
-            "735356255780.dkr.ecr.us-west-2.amazonaws.com":
+            "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com":
               auth:
-                username: AWS
-                password: "{{ ecr_token.stdout }}"
+                credHelpers:
+                  "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com": "ecr-login"
         mode: '0600'
 
     - name: Restart k3s to apply registry changes
