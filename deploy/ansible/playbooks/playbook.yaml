@@ -72,21 +72,20 @@
       args:
         creates: /usr/local/bin/k3s
 
-    - name: Install Amazon ECR Credential Helper
-      ansible.builtin.apt:
-        name: amazon-ecr-credential-helper
-        state: present
-        update_cache: yes
+    - name: Get ECR token
+      ansible.builtin.command: aws ecr get-login-password --region {{ aws_region }}
+      register: ecr_token
+      changed_when: false
 
-    - name: Configure K3s registry to use ECR Helper
+    - name: Configure K3s registry for ECR
       ansible.builtin.copy:
         dest: /etc/rancher/k3s/registries.yaml
         content: |
           configs:
             "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com":
               auth:
-                credHelpers:
-                  "{{ aws_account_id }}.dkr.ecr.{{ aws_region }}.amazonaws.com": "ecr-login"
+                username: AWS
+                password: "{{ ecr_token.stdout }}"
         mode: '0600'
 
     - name: Restart k3s to apply registry changes
