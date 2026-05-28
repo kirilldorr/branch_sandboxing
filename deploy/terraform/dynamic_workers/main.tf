@@ -52,7 +52,19 @@ resource "aws_instance" "worker" {
   user_data = <<-EOF
     #!/bin/bash
     set -e
-    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=${var.k3s_version} K3S_URL="https://${data.terraform_remote_state.base.outputs.public_ip}:6443" K3S_TOKEN="${var.k3s_token}" sh -
+    apt-get update
+    apt-get install -y amazon-ecr-credential-helper
+
+    mkdir -p /etc/rancher/k3s
+    cat <<EOT > /etc/rancher/k3s/registries.yaml
+    configs:
+      "${data.terraform_remote_state.base.outputs.account_id}.dkr.ecr.${data.terraform_remote_state.base.outputs.aws_region}.amazonaws.com":
+        auth:
+          credHelpers:
+            "${data.terraform_remote_state.base.outputs.account_id}.dkr.ecr.${data.terraform_remote_state.base.outputs.aws_region}.amazonaws.com": "ecr-login"
+    EOT
+
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${var.k3s_version}" K3S_URL="https://${data.terraform_remote_state.base.outputs.public_ip}:6443" K3S_TOKEN="${var.k3s_token}" sh -
     EOF
 
   lifecycle {
