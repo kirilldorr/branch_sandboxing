@@ -5,18 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ACTION="install"
 
-# Check for --uninstall flag
 if [[ "$1" == "--uninstall" ]]; then
     ACTION="uninstall"
 fi
 
-echo -n "Enter AWS Region (e.g. us-west-2): "
-read REGION
+REGION=$(grep -E '^\s*region\s*=\s*' "$SCRIPT_DIR/terraform/main.tf" | head -n 1 | awk -F'"' '{print $2}')
 
 if [[ -z "$REGION" ]]; then
-    echo "Error: AWS Region cannot be empty."
+    echo "Error: Could not extract AWS Region from terraform/main.tf."
     exit 1
 fi
+
+echo "Using AWS Region: $REGION"
 
 echo "=== Fetching Kubeconfig and K3s Token from master node ==="
 
@@ -39,15 +39,14 @@ ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ubuntu@"$BASE_IP" "sudo cat /etc/r
 sed -i "s/127.0.0.1/$BASE_IP/g" ~/.kube/config
 sed -i 's/certificate-authority-data:.*/insecure-skip-tls-verify: true/g' ~/.kube/config
 
-echo "✅ Kubeconfig successfully updated for K3s cluster at $BASE_IP"
+echo "Kubeconfig successfully updated for K3s cluster at $BASE_IP"
 
-# Fetch K3s node token for the autoscaler workers
 K3S_TOKEN=$(ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ubuntu@"$BASE_IP" "sudo cat /var/lib/rancher/k3s/server/node-token")
 if [[ -z "$K3S_TOKEN" ]]; then
     echo "Error: Failed to fetch K3s node token."
     exit 1
 fi
-echo "✅ K3s token successfully fetched."
+echo "K3s token successfully fetched."
 
 if [[ "$ACTION" == "install" ]]; then
 
@@ -73,11 +72,11 @@ INLINE_EOF
         sudo systemctl restart k3s
         sleep 15
     else
-        echo "✅ Master node already has the correct AWS ProviderID."
+        echo "Master node already has the correct AWS ProviderID."
     fi
 
     if [ ! -f /usr/local/bin/k3s-node-sweeper.sh ]; then
-        echo "🧹 Creating daily NotReady node sweeper script..."
+        echo "Creating daily NotReady node sweeper script..."
         sudo tee /usr/local/bin/k3s-node-sweeper.sh > /dev/null << 'INNER_EOF'
 #!/bin/bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -87,9 +86,9 @@ INNER_EOF
         sudo chmod +x /usr/local/bin/k3s-node-sweeper.sh
         
         echo "0 0 * * * root /usr/local/bin/k3s-node-sweeper.sh >> /var/log/k3s-node-sweeper.log 2>&1" | sudo tee /etc/cron.d/k3s-node-sweeper > /dev/null
-        echo "✅ Daily cron job registered successfully (runs at 00:00)."
+        echo "Daily cron job registered successfully (runs at 00:00)."
     else
-        echo "✅ Node sweeper cron job already configured."
+        echo "Node sweeper cron job already configured."
     fi
 EOF
 
@@ -116,7 +115,7 @@ EOF
       --set extraArgs.skip-nodes-with-system-pods=false \
       --set extraArgs.skip-nodes-with-local-storage=false
 
-    echo "✅ Installation completed successfully!"
+    echo "Installation completed successfully!"
 
 elif [[ "$ACTION" == "uninstall" ]]; then
     echo "=== 1. Uninstalling Cluster Autoscaler via Helm ==="
@@ -129,7 +128,7 @@ elif [[ "$ACTION" == "uninstall" ]]; then
     
     echo "=== 3. Cleaning up Master Node ==="
     ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ubuntu@"$BASE_IP" "sudo rm -f /etc/cron.d/k3s-node-sweeper /usr/local/bin/k3s-node-sweeper.sh" || true
-    echo "✅ Cron job cleaned up from Master node."
+    echo "Cron job cleaned up from Master node."
 
-    echo "✅ Uninstallation completed successfully!"
+    echo "Uninstallation completed successfully!"
 fi

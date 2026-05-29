@@ -15,6 +15,7 @@ env:
   DOMAIN: "devtracklify.com"    # Change to your domain name
   BRANCH_RAM_REQ: "1024"        # Change to your pattern RAM requirement in Mb
   K3S_VERSION: "v1.27.3+k3s1"
+  AWS_REGION: us-west-2
 
 jobs:
   deploy-sandbox:
@@ -29,7 +30,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Sanitize Branch Name
         id: slug
@@ -118,7 +119,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Sanitize Deleted Branch Name
         id: slug
