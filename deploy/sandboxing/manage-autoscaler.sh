@@ -18,8 +18,8 @@ if [[ -z "$REGION" ]]; then
     exit 1
 fi
 
-echo "=== 0. Fetching Kubeconfig and K3s Token from master node ==="
-# Get Base IP from main terraform stack
+echo "=== Fetching Kubeconfig and K3s Token from master node ==="
+
 BASE_IP=$(cd "$SCRIPT_DIR/../terraform" && terraform output -raw public_ip)
 if [[ -z "$BASE_IP" ]]; then
     echo "Error: Cannot get public_ip from base terraform state. Make sure base infrastructure is applied."
@@ -50,6 +50,49 @@ fi
 echo "✅ K3s token successfully fetched."
 
 if [[ "$ACTION" == "install" ]]; then
+
+    echo "=== Fixing ProviderID on Master Node ==="
+
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ubuntu@"$BASE_IP" "bash -s" << 'EOF'
+    CURRENT_PROVIDER=$(sudo k3s kubectl get node $(hostname) -o jsonpath='{.spec.providerID}' 2>/dev/null || echo "")
+    
+    if [[ "$CURRENT_PROVIDER" != aws://* ]]; then
+        echo "🔧 Fixing K3s ProviderID to match AWS format..."
+        TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+        INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id)
+        AZ=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+        
+        sudo mkdir -p /etc/rancher/k3s/config.yaml.d
+        sudo tee /etc/rancher/k3s/config.yaml.d/aws-provider.yaml > /dev/null <<INLINE_EOF
+kubelet-arg:
+  - "provider-id=aws:///${AZ}/${INSTANCE_ID}"
+INLINE_EOF
+        
+        echo "Restarting K3s service to apply AWS Provider ID..."
+        sudo k3s kubectl delete node $(hostname)
+        sudo systemctl restart k3s
+        sleep 15
+    else
+        echo "✅ Master node already has the correct AWS ProviderID."
+    fi
+
+    if [ ! -f /usr/local/bin/k3s-node-sweeper.sh ]; then
+        echo "🧹 Creating daily NotReady node sweeper script..."
+        sudo tee /usr/local/bin/k3s-node-sweeper.sh > /dev/null << 'INNER_EOF'
+#!/bin/bash
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+/usr/local/bin/kubectl get nodes | grep NotReady | awk '{print $1}' | xargs -r /usr/local/bin/kubectl delete node
+INNER_EOF
+        
+        sudo chmod +x /usr/local/bin/k3s-node-sweeper.sh
+        
+        echo "0 0 * * * root /usr/local/bin/k3s-node-sweeper.sh >> /var/log/k3s-node-sweeper.log 2>&1" | sudo tee /etc/cron.d/k3s-node-sweeper > /dev/null
+        echo "✅ Daily cron job registered successfully (runs at 00:00)."
+    else
+        echo "✅ Node sweeper cron job already configured."
+    fi
+EOF
+
     echo "=== 1. Provisioning ASG via Terraform ==="
     cd "$SCRIPT_DIR/terraform"
     terraform init
@@ -62,6 +105,8 @@ if [[ "$ACTION" == "install" ]]; then
 
     helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
       --namespace kube-system \
+      --version 9.33.0 \
+      --set image.tag=v1.27.3 \
       --set autoDiscovery.clusterName=my-sandbox-cluster \
       --set autoDiscovery.tags[0]=k8s.io/cluster-autoscaler/enabled \
       --set autoDiscovery.tags[1]=k8s.io/cluster-autoscaler/my-sandbox-cluster \
@@ -82,5 +127,9 @@ elif [[ "$ACTION" == "uninstall" ]]; then
     terraform init
     terraform destroy -var="k3s_token=$K3S_TOKEN" -auto-approve
     
+    echo "=== 3. Cleaning up Master Node ==="
+    ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" ubuntu@"$BASE_IP" "sudo rm -f /etc/cron.d/k3s-node-sweeper /usr/local/bin/k3s-node-sweeper.sh" || true
+    echo "✅ Cron job cleaned up from Master node."
+
     echo "✅ Uninstallation completed successfully!"
 fi
